@@ -223,12 +223,14 @@ textarea{resize:vertical;min-height:65px}
 .wv-slow{color:var(--blue)!important;font-weight:600}
 .wv-method-btn{background:none;border:1px solid currentColor;border-radius:5px;padding:2px 7px;font-size:.68rem;font-family:'DM Sans',sans-serif;cursor:pointer;color:var(--accent);opacity:.7;transition:opacity .15s}.wv-method-btn:hover{opacity:1}
 
-.wv-notes-tabs{display:flex;gap:4px;margin-bottom:6px}
-.wv-notes-tab{flex:1;padding:4px 2px;border:1px solid var(--border);border-radius:6px;background:transparent;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:.68rem;font-weight:500;color:var(--muted);transition:all .15s;text-align:center}
-.wv-notes-tab.active{background:var(--ink);color:#fff;border-color:var(--ink)}
-.wv-note-area{width:100%;font-size:.78rem;padding:6px 8px;border:1px dashed var(--border);border-radius:7px;background:var(--warm-white);font-family:'DM Sans',sans-serif;color:var(--ink);resize:none;min-height:72px;transition:border-color .15s}
+.wv-notes-stack{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+.wv-note-section{display:flex;flex-direction:column;gap:3px}
+.wv-note-label{font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);display:flex;align-items:center;gap:4px}
+.wv-note-area{width:100%;font-size:.78rem;padding:6px 8px;border:1px dashed var(--border);border-radius:7px;background:var(--warm-white);font-family:'DM Sans',sans-serif;color:var(--ink);resize:none;min-height:44px;transition:border-color .15s}
 .wv-note-area:focus{outline:none;border-color:var(--accent);border-style:solid}
 .wv-note-area::placeholder{color:#ccc}
+.wv-note-area:not(:placeholder-shown){background:#fffdf9;border-style:solid;border-color:var(--border)}
+.wv-note-section.has-content .wv-note-label{color:var(--ink)}
 
 .empty-state{text-align:center;padding:38px 18px;color:var(--muted)}
 .empty-state .icon{font-size:2rem;margin-bottom:9px}
@@ -1078,14 +1080,7 @@ function saveNoteTab(dk, tab, val) {
   save();
 }
 
-function switchNoteTab(btn, tab) {
-  const card = btn.closest('.wv-day');
-  card.querySelectorAll('.wv-notes-tab').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  card.querySelectorAll('.wv-note-area').forEach(ta => {
-    ta.style.display = ta.dataset.tab === tab ? 'block' : 'none';
-  });
-}
+// switchNoteTab removed — notes are now stacked, always visible
 
 function renderWeekView() {
   if (!weekViewMonday) weekViewMonday = getMondayKey(today);
@@ -1136,14 +1131,20 @@ function renderWeekView() {
       ${mealsHtml}
       <button class="wv-add-btn" onclick="openModal('${dk}')">+ Add meal</button>
       <div class="wv-notes">
-        <div class="wv-notes-tabs">
-          <button class="wv-notes-tab active" onclick="switchNoteTab(this,'plan')">📋 Plan</button>
-          <button class="wv-notes-tab" onclick="switchNoteTab(this,'people')">👤 People</button>
-          <button class="wv-notes-tab" onclick="switchNoteTab(this,'prep')">⏰ Prep</button>
+        <div class="wv-notes-stack">
+          <div class="wv-note-section">
+            <span class="wv-note-label">📋 Plan</span>
+            <textarea class="wv-note-area" placeholder="Meal plan notes, changes…" oninput="saveNoteTab('${dk}','plan',this.value)">${esc((dayNotes[dk]&&dayNotes[dk].plan)||(typeof dayNotes[dk]==='string'?dayNotes[dk]:''))}</textarea>
+          </div>
+          <div class="wv-note-section">
+            <span class="wv-note-label">👤 People</span>
+            <textarea class="wv-note-area" placeholder="Fred at swimming, visitors, Josh late…" oninput="saveNoteTab('${dk}','people',this.value)">${esc(dayNotes[dk]&&dayNotes[dk].people||'')}</textarea>
+          </div>
+          <div class="wv-note-section">
+            <span class="wv-note-label">⏰ Prep</span>
+            <textarea class="wv-note-area" placeholder="Start slow cooker 9am, defrost tonight…" oninput="saveNoteTab('${dk}','prep',this.value)">${esc(dayNotes[dk]&&dayNotes[dk].prep||'')}</textarea>
+          </div>
         </div>
-        <textarea class="wv-note-area" data-tab="plan"   placeholder="Meal plan notes, changes…"        oninput="saveNoteTab('${dk}','plan',this.value)"  style="display:block">${esc((dayNotes[dk]&&dayNotes[dk].plan)||(typeof dayNotes[dk]==='string'?dayNotes[dk]:''))}</textarea>
-        <textarea class="wv-note-area" data-tab="people" placeholder="Fred at swimming, visitors, Josh late…" oninput="saveNoteTab('${dk}','people',this.value)" style="display:none">${esc(dayNotes[dk]&&dayNotes[dk].people||'')}</textarea>
-        <textarea class="wv-note-area" data-tab="prep"   placeholder="Start slow cooker 9am, defrost tonight…"  oninput="saveNoteTab('${dk}','prep',this.value)"   style="display:none">${esc(dayNotes[dk]&&dayNotes[dk].prep||'')}</textarea>
       </div>
     </div>`;
   });

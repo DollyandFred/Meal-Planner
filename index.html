@@ -3,7 +3,20 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Our Recipe Planner</title>
+<title>Froud Family Planner</title>
+
+<!-- PWA manifest — links to manifest.json in the same folder on GitHub -->
+<link rel="manifest" href="manifest.json">
+
+<!-- iOS home screen support (Safari doesn't use the manifest for these) -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Meal Planner">
+<link rel="apple-touch-icon" href="icon-512.png">
+
+<!-- Android / browser theme colour -->
+<meta name="theme-color" content="#00674f">
+
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -304,7 +317,7 @@ textarea{resize:vertical;min-height:65px}
 <div id="lock-screen">
   <div class="lock-card">
     <div class="lock-logo">🍽</div>
-    <h1 class="lock-title">Our Recipe Planner</h1>
+    <h1 class="lock-title">Froud Family Planner</h1>
     <p class="lock-subtitle">Enter your password to continue</p>
     <div class="lock-input-wrap">
       <input class="lock-input" type="password" id="lock-input" placeholder="Password"
@@ -319,7 +332,7 @@ textarea{resize:vertical;min-height:65px}
 </div>
 
 <header>
-  <h1>🍽 Our Recipe Planner</h1>
+  <h1>🍽 Froud Family Planner</h1>
   <div class="sync-bar">
     <span class="sync-status" id="sync-status">Not connected</span>
     <button class="btn btn-blue btn-sm" id="sync-btn" onclick="syncNow()" style="display:none">⟳ Sync</button>
@@ -1615,46 +1628,158 @@ async function jbJoin() {
   }
 }
 
-async function jbPush() {
-  if (!jbApiKey || !jbBinId) return;
+// ── Raw fetch helpers ──
+async function jbFetch() {
+  const res = await fetch(`${JB_BASE}/b/${jbBinId}/latest`, { headers: jbHeaders(false) });
+  if (!res.ok) throw new Error(`Fetch failed: HTTP ${res.status}`);
+  const json = await res.json();
+  return json.record || json;
+}
+
+async function jbPut(payload) {
   const res = await fetch(`${JB_BASE}/b/${jbBinId}`, {
     method: 'PUT',
     headers: jbHeaders(true),
-    body: JSON.stringify(getPayload())
+    body: JSON.stringify(payload)
   });
-  if (!res.ok) throw new Error(`Push failed: HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`Save failed: HTTP ${res.status}`);
 }
 
-async function jbPull(silent) {
-  if (!jbApiKey || !jbBinId) return;
-  const res = await fetch(`${JB_BASE}/b/${jbBinId}/latest`, {
-    headers: jbHeaders(false)
+// ── MERGE ENGINE ──
+// Merges remote data into local data without either side overwriting the other.
+// Strategy:
+//   monthPlan  — merge by date key, keeping all meals from both sides (dedup by uid)
+//   recipes    — merge by id, local edits win if same id (most recent savedAt wins)
+//   dayNotes   — merge by date key, combine text if both sides have content for same tab
+//   weekExtras — merge by week key, dedup by id
+//   bookDb     — union of both arrays
+//   ingDb      — union by name
+//   checkedItems — keep local (shopping state is personal to each device)
+//   extraItems — union by id (legacy)
+
+function mergeData(remote) {
+  // ── monthPlan: merge all dates, dedup meals by uid ──
+  const merged = JSON.parse(JSON.stringify(monthPlan)); // deep clone local
+  Object.entries(remote.monthPlan || {}).forEach(([dk, meals]) => {
+    if (!merged[dk]) merged[dk] = [];
+    const existingUids = new Set(merged[dk].map(e => e.uid));
+    meals.forEach(meal => {
+      if (!existingUids.has(meal.uid)) merged[dk].push(meal);
+    });
   });
-  if (!res.ok) throw new Error(`Pull failed: HTTP ${res.status}`);
-  const json = await res.json();
-  // JSONBin v3 with X-Bin-Meta:false returns the record directly
-  const data = json.record || json;
-  applyPayload(data);
-  save();
-  if (!silent) { renderRecipes(); renderCalendar(); if (document.getElementById('page-shopping').classList.contains('active')) { buildWeekTabs(); renderShoppingList(); renderExtras(); } }
+  monthPlan = merged;
+
+  // ── recipes: merge by id, keep whichever was saved most recently ──
+  const recipeMap = {};
+  recipes.forEach(r => recipeMap[r.id] = r);
+  (remote.recipes || []).forEach(r => {
+    if (!recipeMap[r.id]) {
+      recipeMap[r.id] = r; // new recipe from remote, add it
+    }
+    // if same id exists locally, keep local (user is actively editing)
+  });
+  recipes = Object.values(recipeMap).sort((a,b) => a.name.localeCompare(b.name));
+
+  // ── dayNotes: merge by date, combine text from both sides ──
+  const mergedNotes = JSON.parse(JSON.stringify(dayNotes));
+  Object.entries(remote.dayNotes || {}).forEach(([dk, remoteNote]) => {
+    const localNote = mergedNotes[dk];
+    if (!localNote) {
+      mergedNotes[dk] = remoteNote;
+    } else {
+      // Both have notes for this day — merge each tab
+      ['plan','people','prep'].forEach(tab => {
+        const local  = (typeof localNote  === 'string' ? (tab==='plan'?localNote:'')  : (localNote[tab]  || ''));
+        const remote = (typeof remoteNote === 'string' ? (tab==='plan'?remoteNote:'') : (remoteNote[tab] || ''));
+        if (local && remote && local.trim() !== remote.trim()) {
+          // Both sides have different content — combine with separator
+          if (!mergedNotes[dk] || typeof mergedNotes[dk] === 'string') mergedNotes[dk] = { plan:'', people:'', prep:'' };
+          mergedNotes[dk][tab] = local + '\n— ' + remote;
+        } else if (!local && remote) {
+          if (!mergedNotes[dk] || typeof mergedNotes[dk] === 'string') mergedNotes[dk] = { plan:'', people:'', prep:'' };
+          mergedNotes[dk][tab] = remote;
+        }
+      });
+      // Brain dump lists
+      const bdKey = '_bd_' + dk;
+      // handled below in weekExtras-style merge
+    }
+  });
+  // Merge brain dump arrays
+  Object.entries(remote.dayNotes || {}).forEach(([dk]) => {
+    if (!dk.startsWith('_bd_')) return;
+    const remoteArr = remote.dayNotes[dk] || [];
+    const localArr  = mergedNotes[dk] || [];
+    const combined  = [...localArr];
+    remoteArr.forEach(item => { if (!combined.includes(item)) combined.push(item); });
+    mergedNotes[dk] = combined;
+  });
+  dayNotes = mergedNotes;
+
+  // ── weekExtras: merge by week key, dedup by id ──
+  const mergedExtras = JSON.parse(JSON.stringify(weekExtras));
+  Object.entries(remote.weekExtras || {}).forEach(([wk, items]) => {
+    if (!mergedExtras[wk]) mergedExtras[wk] = [];
+    const existingIds = new Set(mergedExtras[wk].map(e => e.id));
+    items.forEach(item => { if (!existingIds.has(item.id)) mergedExtras[wk].push(item); });
+  });
+  weekExtras = mergedExtras;
+
+  // ── bookDb: union ──
+  const bookSet = new Set([...bookDb, ...(remote.bookDb || [])]);
+  bookDb = [...bookSet].sort();
+
+  // ── ingDb: union by name ──
+  const ingMap = {};
+  [...ingDb, ...(remote.ingDb || [])].forEach(i => {
+    ingMap[i.name.toLowerCase()] = i;
+  });
+  ingDb = Object.values(ingMap);
+
+  // ── extraItems (legacy): union by id ──
+  const extMap = {};
+  [...extraItems, ...(remote.extraItems || [])].forEach(e => extMap[e.id] = e);
+  extraItems = Object.values(extMap);
+
+  // checkedItems stays local — ticking off shopping is per-device
 }
 
 async function syncNow() {
   if (!jbApiKey || !jbBinId) { showPage('sync', null); return; }
   setSyncStatus('Syncing…');
   try {
-    // Always push local data first to preserve it, then pull to pick up any remote changes
-    await jbPush();
-    await jbPull(false);
+    // 1. Fetch remote
+    const remote = await jbFetch();
+    // 2. Merge remote into local (non-destructive)
+    mergeData(remote);
+    // 3. Save merged result locally
+    save();
+    // 4. Push merged result back to JSONBin
+    await jbPut(getPayload());
+    // 5. Update UI
     const now = new Date().toISOString();
     localStorage.setItem('rp_jb_last', now);
     setSyncStatus('Synced ✓', 'ok');
     const lastEl = document.getElementById('jb-last-sync');
     if (lastEl) lastEl.textContent = 'Last synced: ' + new Date().toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit'});
+    // Refresh whichever page is visible
+    renderRecipes();
+    renderCalendar();
+    if (document.getElementById('page-week').classList.contains('active')) renderWeekView();
+    if (document.getElementById('page-shopping').classList.contains('active')) { buildWeekTabs(); renderShoppingList(); renderExtras(); }
   } catch(e) {
     setSyncStatus('Sync failed', 'err');
     alert('Sync failed: ' + e.message);
   }
+}
+
+// Keep jbPull for jbJoin verification only
+async function jbPull(silent) {
+  if (!jbApiKey || !jbBinId) return;
+  const data = await jbFetch();
+  applyPayload(data);
+  save();
+  if (!silent) { renderRecipes(); renderCalendar(); if (document.getElementById('page-shopping').classList.contains('active')) { buildWeekTabs(); renderShoppingList(); renderExtras(); } }
 }
 
 function jbDisconnect() {
@@ -1736,15 +1861,10 @@ weekViewMonday = getMondayKey(today);
 renderWeekView();
 refreshSyncUI();
 
-// Auto-sync on load — push local first to preserve it, then pull any remote changes
+// Auto-sync on load — use merge so neither device overwrites the other
 if (jbApiKey && jbBinId) {
   setSyncStatus('Syncing…');
-  jbPush().then(() => {
-    return jbPull(false);
-  }).then(() => {
-    setSyncStatus('Synced ✓', 'ok');
-    localStorage.setItem('rp_jb_last', new Date().toISOString());
-  }).catch(() => setSyncStatus('Connected — tap Sync to update', ''));
+  syncNow().catch(() => setSyncStatus('Tap Sync to connect', ''));
 }
 
 document.getElementById('meal-modal').addEventListener('click', function(e) { if (e.target===this) closeModal(); });
